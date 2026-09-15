@@ -1,0 +1,15 @@
+{
+  "weights": "",
+  "device": "cpu",
+  "confidence": 0.35,
+  "detector_hz": 5.0,
+  "sync_slop_s": 0.015,
+  "stale_s": 1.5,
+  "mount_verified": false,
+  "mount_xyz_m": [0.0, 0.0, 1.0],
+  "mount_rpy_rad": [0.0, 0.0, 0.0],
+  "local_height_band_m": [-0.35, 0.35],
+  "record_bag": true,
+  "save_frame_hz": 1.0,
+  "runs_dir": "runs"
+}
