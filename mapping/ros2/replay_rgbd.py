@@ -1,6 +1,8 @@
 """TUM measured timestamp replay using a common clock offset. No ground truth."""
 import sys
+import os
 import time
+import json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import rclpy
@@ -14,9 +16,14 @@ from inputs import tum_frames
 
 
 def main():
+    rate = float(os.environ.get('DISASTER_REPLAY_RATE', '1'))
+    if not 0 < rate <= 1:
+        raise ValueError('Replay rate must be in (0, 1]')
     rclpy.init()
     node = Node('public_rgbd_replay')
     bridge = CvBridge()
+    index_path = Path(os.environ['DISASTER_SESSION'])/'replay_frames.jsonl'
+    index_log = index_path.open('w', encoding='utf-8', buffering=1)
     rgb_pub = node.create_publisher(Image, '/camera/color/image_raw', 10)
     depth_pub = node.create_publisher(Image, '/camera/aligned_depth_to_color/image_raw', 10)
     info_pub = node.create_publisher(CameraInfo, '/camera/color/camera_info', 10)
@@ -33,13 +40,21 @@ def main():
         for _ in range(50):
             rclpy.spin_once(node, timeout_sec=.1)
         offset = None
+        max_duration = float(os.environ.get('DISASTER_REPLAY_DURATION', '0'))
         for frame in tum_frames(sys.argv[1]):
             if offset is None:
                 offset = node.get_clock().now().nanoseconds/1e9-frame['stamp']
                 first_stamp, start_wall = frame['stamp'], time.monotonic()
-            due = start_wall + frame['stamp']-first_stamp
+            if max_duration > 0 and frame['stamp']-first_stamp > max_duration:
+                break
+            # Slow delivery when requested; preserve original sensor timestamp intervals.
+            due = start_wall + (frame['stamp']-first_stamp)/rate
             while time.monotonic() < due:
                 rclpy.spin_once(node, timeout_sec=max(0., min(.01, due-time.monotonic())))
+            # Rebase to publication time for slow playback; retain RGB-depth skew.
+            # Replay velocity/timing is not a real-time performance measurement.
+            if rate != 1:
+                offset = node.get_clock().now().nanoseconds/1e9-frame['stamp']
             stamp = Time(nanoseconds=round((frame['stamp']+offset)*1e9)).to_msg()
             rgb = bridge.cv2_to_imgmsg(frame['rgb'], 'rgb8')
             depth = bridge.cv2_to_imgmsg(frame['depth_m'], '32FC1')
@@ -57,12 +72,15 @@ def main():
             info_pub.publish(info)
             rgb_pub.publish(rgb)
             depth_pub.publish(depth)
+            index_log.write(json.dumps(dict(source_stamp=frame['stamp'], source_depth_stamp=frame['depth_stamp'],
+                published_stamp=stamp.sec+stamp.nanosec*1e-9, filename=frame['filename']))+'\n')
             rclpy.spin_once(node, timeout_sec=0)
         node.get_logger().info('Public sample ended; no loop or fabricated trajectory. Tracking will become STALE.')
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        index_log.close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

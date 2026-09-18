@@ -42,12 +42,15 @@ class Viewer(Node):
         self.camera_info = None
         self.last_frame_save = self.last_preview = self.last_map_save = -1e9
         self.events = (self.out/'detections.jsonl').open('a', encoding='utf-8', buffering=1)
+        self.raw_events = (self.out/'detections_raw.jsonl').open('a', encoding='utf-8', buffering=1)
         self.poses = (self.out/'poses.jsonl').open('a', encoding='utf-8', buffering=1)
         self.health_log = (self.out/'tracking.jsonl').open('a', encoding='utf-8', buffering=1)
         self.last_health = None
         self.pending_poses = []
+        self.pending_detections = []
+        self.create_timer(.05, self.resolve_detections)
         self.create_timer(.1, self.update_pose)
-        self.create_subscription(Image, '/disaster/annotated', self.annotated, qos_profile_sensor_data)
+        self.create_subscription(Image, '/disaster/annotated', self.annotated, 5)
         self.create_subscription(String, '/disaster/detections', self.detections, 10)
         self.create_subscription(String, '/disaster/tracking', self.tracking, 10)
         self.create_subscription(String, '/disaster/detector_status', self.detector_status, 10)
@@ -56,7 +59,8 @@ class Viewer(Node):
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(OccupancyGrid, '/map', self.grid, map_qos)
         self.create_subscription(MapGraph, '/disaster/map_graph', self.graph, 1)
-        self.subs = [Subscriber(self, t, topic, qos_profile=qos_profile_sensor_data) for t, topic in [
+        qos = QoSProfile(depth=30) if os.environ.get('DISASTER_REPLAY') or self.c.get('reliable_camera') else qos_profile_sensor_data
+        self.subs = [Subscriber(self, t, topic, qos_profile=qos) for t, topic in [
             (Image, '/camera/color/image_raw'), (Image, '/camera/aligned_depth_to_color/image_raw'),
             (CameraInfo, '/camera/color/camera_info')]]
         self.sync = ApproximateTimeSynchronizer(self.subs, 8, self.c['sync_slop_s'])
@@ -82,15 +86,18 @@ class Viewer(Node):
             local_depth = dep
         else:
             raise ValueError('Unsupported calibration distortion: ' + info.distortion_model)
-        local, _ = self.mapper.update(local_depth, k)
+        local, _ = self.mapper.update(local_depth, k, precleaned=True)
         colored = cv2.cvtColor(cv2.applyColorMap(np.uint8(np.clip(dep/6*255, 0, 255)), cv2.COLORMAP_TURBO), cv2.COLOR_BGR2RGB)
         colored[dep == 0] = 0
         local_rgb = np.full((*local.shape, 3), (49, 61, 79), np.uint8)
         local_rgb[local > 0] = (243, 160, 65)
+        from console_ui import point_cloud_preview
+        cloud = point_cloud_preview(dep, K)
         with self.s.lock:
             self.camera_info = info
             self.s.times['rgb'] = now
             self.s.depth, self.s.local = colored, local_rgb
+            self.s.pointcloud = cloud
             if now-self.s.times.get('annotated', -1e9) > self.c['stale_s']:
                 self.s.rgb = color
         if now-self.last_frame_save >= 1/self.c['save_frame_hz']:
@@ -148,7 +155,8 @@ class Viewer(Node):
             with self.s.lock:
                 self.s.pose = p
                 self.s.times['pose'] = time.monotonic()
-            self.poses.write(json.dumps(dict(stamp=stamp_s(msg), frame='map', xyz_yaw=p))+'\n')
+            self.poses.write(json.dumps(dict(stamp=stamp_s(msg), frame='map', xyz_yaw=p,
+                quaternion_xyzw=[q.x,q.y,q.z,q.w]))+'\n')
         except TransformException:
             with self.s.lock:
                 self.s.pose = None
@@ -156,10 +164,36 @@ class Viewer(Node):
 
     def detections(self, msg):
         data = json.loads(msg.data)
+        self.raw_events.write(json.dumps(data,allow_nan=False)+'\n')
+        with self.s.lock:
+            self.s.rows = data['detections']
+            self.s.times['detections'] = time.monotonic()
+            self.s.marker_reason = '촬영 시각 좌표 대기' if data['detections'] else '탐지 대상 없음'
+        self.pending_detections.append((time.monotonic(), data, self.camera_info))
+        self.pending_detections = self.pending_detections[-20:]
+        self.resolve_detections()
+
+    def resolve_detections(self):
+        now = time.monotonic()
+        # Detection often finishes before odometry publishes the matching TF.
+        # Retry that exact timestamp; never substitute the latest camera pose.
+        self.pending_detections = [p for p in self.pending_detections if now-p[0] < 1.0]
+        for _, data, info in reversed(self.pending_detections):
+            if self.project_detection(data, info):
+                self.pending_detections = [p for p in self.pending_detections if p[1]['stamp'] > data['stamp']]
+                return
+        with self.s.lock:
+            if now-self.s.times.get('markers',-1e9) > 1.0:
+                self.s.markers = []
+
+    def project_detection(self, data, info):
         markers = []
-        info = self.camera_info
         with self.s.lock:
             valid = self.s.tracking == 'TRACKING' and time.monotonic()-self.s.times.get('tracking', -1e9) < self.c['stale_s']
+        if data['detections'] and (not valid or not info or info.header.frame_id != data['frame_id']):
+            with self.s.lock:
+                self.s.marker_reason = '위치 추정 복구 대기' if not valid else '깊이 보정정보 대기'
+            return False
         if valid and info and info.header.frame_id == data['frame_id']:
             try:
                 t = self.tf.lookup_transform('map', data['frame_id'], Time(nanoseconds=round(data['stamp']*1e9))).transform
@@ -172,15 +206,17 @@ class Viewer(Node):
                         continue
                     ray = cv2.undistortPoints(uv, np.array(info.k).reshape(3, 3), np.array(info.d) if len(info.d) else None)[0, 0]
                     z = row['depth_m']
-                    markers.append(dict(label=row['label'], xyz=xyz_transform(t, [ray[0]*z, ray[1]*z, z])))
+                    markers.append(dict(label=row['label'], depth_m=z, xyz=xyz_transform(t, [ray[0]*z, ray[1]*z, z])))
             except TransformException:
-                pass
+                return False
         data['map_markers'] = markers
         data['map_marker_note'] = 'timestamp TF + ROI estimate; instantaneous, not persistent semantic map'
         self.events.write(json.dumps(data, allow_nan=False)+'\n')
         with self.s.lock:
-            self.s.rows, self.s.markers = data['detections'], markers
-            self.s.times['detections'] = time.monotonic()
+            self.s.markers = markers
+            self.s.times['markers'] = time.monotonic()
+            self.s.marker_reason = f'지도 위치 {len(markers)}개 표시' if markers else '유효 깊이 없음' if data['detections'] else '탐지 대상 없음'
+        return True
 
     def grid(self, msg):
         with self.s.lock:
@@ -198,6 +234,10 @@ class Viewer(Node):
         self.save_map(grid, meta)
 
     def save_map(self, grid, meta):
+        if self.c.get('record_map_history'):
+            folder=self.out/'map_history'
+            folder.mkdir(exist_ok=True)
+            np.savez_compressed(folder/f'{time.time_ns()}.npz',occupancy=grid,metadata=json.dumps(meta))
         # Atomic individual files; raw NPZ includes matching metadata for unambiguous recovery.
         with (self.out/'map.tmp.npz').open('wb') as f:
             np.savez_compressed(f, occupancy=grid, metadata=json.dumps(meta))
@@ -226,6 +266,7 @@ class Viewer(Node):
 
     def close(self):
         self.events.close()
+        self.raw_events.close()
         self.poses.close()
         self.health_log.close()
 

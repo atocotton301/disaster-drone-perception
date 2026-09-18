@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile
 from sensor_msgs.msg import Image, CameraInfo
 from nav_msgs.msg import Odometry
 from rtabmap_msgs.msg import OdomInfo
@@ -29,7 +29,13 @@ class Gate(Node):
                   (CameraInfo, '/camera/color/camera_info', 'info'),
                   (Odometry, '/odom', 'odom'), (OdomInfo, '/odom_info', 'odom_info')]
         self.pubs = [self.create_publisher(t, '/disaster/slam/'+n, 5) for t, _, n in inputs]
-        self.subs = [Subscriber(self, t, topic, qos_profile=qos_profile_sensor_data) for t, topic, _ in inputs]
+        qos = QoSProfile(depth=45) if os.environ.get('DISASTER_REPLAY') or self.c.get('reliable_camera') else qos_profile_sensor_data
+        self.subs = [Subscriber(self, t, topic, qos_profile=qos) for t, topic, _ in inputs]
+        self.received = dict.fromkeys([n for _, _, n in inputs], 0)
+        self.accepted = 0
+        for sub, (_, _, name) in zip(self.subs, inputs):
+            sub.registerCallback(lambda msg, name=name: self.count(name))
+        self.create_timer(5., self.log_counts)
         self.sync = ApproximateTimeSynchronizer(self.subs, 45, self.c['sync_slop_s'])
         self.sync.registerCallback(self.process)
         # Failure info may arrive without Odometry; do not wait for a complete tuple to flag loss.
@@ -42,6 +48,12 @@ class Gate(Node):
             self.failure_stamp = max(self.failure_stamp, stamp_s(msg))
             self.health.observe(False, time.monotonic())
             self.reason = 'RTAB-Map visual odometry lost; no SLAM input forwarded'
+
+    def count(self, name):
+        self.received[name] += 1
+
+    def log_counts(self):
+        self.get_logger().info(f'Input counts={self.received}, accepted={self.accepted}, reason={self.reason}')
 
     def publish_status(self):
         self.status_pub.publish(String(data=json.dumps(dict(status=self.health.status(time.monotonic()),
@@ -61,6 +73,7 @@ class Gate(Node):
             if stamp_s(rgb) <= self.failure_stamp:
                 raise ValueError('Discarding delayed tuple preceding latest odometry failure')
             self.last_stamp = stamp_s(rgb)
+            self.accepted += 1
             for pub, msg in zip(self.pubs, (rgb, depth, info, odom, odom_info)):
                 pub.publish(msg)
             self.reason = 'Timestamp-matched valid odometry; SLAM input enabled'

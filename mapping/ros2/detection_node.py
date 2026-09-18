@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cv2
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge
@@ -28,6 +28,8 @@ class Detector(Node):
                 if not Path(self.c['weights']).is_file():
                     raise ValueError('Model file missing: ' + self.c['weights'])
                 from ultralytics import YOLO
+                import torch
+                torch.set_num_threads(2)
                 self.model = YOLO(self.c['weights'])
                 names = self.model.names
                 if len(names) != 5 or set(names.values() if isinstance(names, dict) else names) != CLASSES:
@@ -42,7 +44,9 @@ class Detector(Node):
         self.create_timer(.5, self.heartbeat)
         self.last_input = None
         self.last = -float('inf')
-        self.subs = [Subscriber(self, typ, topic, qos_profile=qos_profile_sensor_data)
+        qos = QoSProfile(depth=30) if os.environ.get('DISASTER_REPLAY') else QoSProfile(depth=1,
+            reliability=ReliabilityPolicy.RELIABLE if self.c.get('reliable_camera') else ReliabilityPolicy.BEST_EFFORT)
+        self.subs = [Subscriber(self, typ, topic, qos_profile=qos)
                      for typ, topic in [(Image, '/camera/color/image_raw'),
                      (Image, '/camera/aligned_depth_to_color/image_raw'),
                      (CameraInfo, '/camera/color/camera_info')]]
@@ -60,6 +64,10 @@ class Detector(Node):
             return
         self.last = now
         try:
+            input_age_ms = (self.get_clock().now().nanoseconds*1e-9-stamp_s(rgb))*1000
+            if not os.environ.get('DISASTER_REPLAY') and input_age_ms > 400:
+                self.status = 'WAITING_FOR_FRESH_FRAME'
+                return
             color = self.bridge.imgmsg_to_cv2(rgb, 'bgr8').copy()
             depth = depth_meters(self.bridge.imgmsg_to_cv2(depth_msg, 'passthrough'), depth_msg.encoding)
             validate_pair(color.shape, depth.shape,
@@ -67,9 +75,12 @@ class Detector(Node):
                 [stamp_s(m) for m in (rgb, depth_msg, info)], self.c['sync_slop_s'])
             rows = []
             if self.model is not None:
-                result = self.model.predict(color, imgsz=640, conf=self.c['confidence'],
+                result = self.model.predict(color, imgsz=self.c.get('imgsz',640), conf=self.c['confidence'],
                     device=self.c['device'], verbose=False)[0]
                 rows = detection_rows(result.boxes.data.cpu().numpy(), self.model.names, depth)
+                selected = self.c.get('selected_classes')
+                if selected:
+                    rows = [r for r in rows if r['label'] in selected]
                 self.status = 'RUNNING'
             for row in rows:
                 x1, y1, x2, y2 = map(int, row['bbox'])
@@ -84,7 +95,8 @@ class Detector(Node):
             self.image_pub.publish(image)
             self.json_pub.publish(String(data=json.dumps(dict(stamp=stamp_s(rgb),
                 frame_id=rgb.header.frame_id, model_status=self.status,
-                depth_delta_s=stamp_s(depth_msg)-stamp_s(rgb), detections=rows), allow_nan=False)))
+                depth_delta_s=stamp_s(depth_msg)-stamp_s(rgb), detections=rows,
+                processing_ms=(time.monotonic()-now)*1000, input_age_ms=input_age_ms), allow_nan=False)))
         except Exception as e:
             self.status = 'PROCESSING_ERROR: ' + str(e)
             self.get_logger().error(self.status)
