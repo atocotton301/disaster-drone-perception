@@ -37,6 +37,7 @@ class GateContractTests(unittest.TestCase):
         self.gate.c = {'sync_slop_s': .015}
         self.gate.last_stamp = self.gate.failure_stamp = -1.
         self.gate.health = TrackingGate(1.5)
+        self.gate.accepted = 0
         self.outputs = []
         self.gate.pubs = [NS(publish=self.outputs.append) for _ in range(5)]
 
