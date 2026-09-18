@@ -10,11 +10,11 @@ import numpy as np
 from PIL import Image
 
 
-def sdk_frames(stop):
+def sdk_frames(stop, fps=15, sync_slop_s=.015):
     import pyrealsense2 as rs
     pipeline, config = rs.pipeline(), rs.config()
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, fps)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, fps)
     profile = pipeline.start(config)
     try:
         scale = profile.get_device().first_depth_sensor().get_depth_scale()
@@ -24,9 +24,14 @@ def sdk_frames(stop):
             depth, rgb = frames.get_depth_frame(), frames.get_color_frame()
             if not depth or not rgb:
                 continue
+            if rgb.get_frame_timestamp_domain() != depth.get_frame_timestamp_domain():
+                continue
+            if abs(rgb.get_timestamp()-depth.get_timestamp())/1000. > sync_slop_s:
+                continue
             intr = rgb.profile.as_video_stream_profile().intrinsics
             # RS intrinsics distortion is retained; preview rectifies supported models.
-            if intr.model not in (rs.distortion.none, rs.distortion.brown_conrady, rs.distortion.modified_brown_conrady):
+            zero_distortion = all(float(c) == 0.0 for c in intr.coeffs)
+            if not zero_distortion and intr.model not in (rs.distortion.none, rs.distortion.brown_conrady, rs.distortion.modified_brown_conrady):
                 raise ValueError('Unsupported RealSense color distortion model '+str(intr.model))
             yield dict(rgb=np.asanyarray(rgb.get_data()).copy(),
                 depth_m=np.asanyarray(depth.get_data()).astype(np.float32)*scale,

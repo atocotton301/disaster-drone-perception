@@ -11,6 +11,13 @@ CLASSES = {'person', 'fire', 'smoke', 'door', 'staircase'}
 def load_config(path):
     path = Path(path).resolve()
     c = json.loads(path.read_text(encoding='utf-8-sig'))
+    if c.get('tracking_origin', 'robot') not in ('robot', 'camera'):
+        raise ValueError('tracking_origin must be robot or camera')
+    if c.get('tracking_origin') == 'camera' and any(c['mount_xyz_m'] + c['mount_rpy_rad']):
+        raise ValueError('Camera-origin tracking requires identity mount transform')
+    selected = c.get('selected_classes')
+    if selected is not None and (not isinstance(selected, list) or not selected or not set(selected) <= CLASSES):
+        raise ValueError('selected_classes must contain known detection classes')
     for key in ('confidence', 'detector_hz', 'sync_slop_s', 'stale_s', 'save_frame_hz'):
         if not isinstance(c[key], (int, float)) or not math.isfinite(c[key]) or c[key] <= 0:
             raise ValueError('Invalid config: ' + key)

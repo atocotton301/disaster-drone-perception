@@ -18,6 +18,7 @@ class State:
         self.meta = None
         self.path = []
         self.markers = []
+        self.marker_reason = '탐지 위치 대기'
         self.pose = None
         self.tracking = 'WAITING'
         self.reason = '카메라와 ROS 입력 대기'
@@ -27,6 +28,7 @@ class State:
         self.error = ''
         self.source = 'LIVE D435i / RTAB-Map'
         self.recorded = False
+        self.performance = {}
 
 
 def map_image(state):
@@ -46,8 +48,17 @@ def map_image(state):
     if state.tracking in ('TRACKING', 'RECORDED'):
         for m in state.markers:
             x, y = point(m['xyz'])
-            d.ellipse((x-4, y-4, x+4, y+4), fill=(255, 80, 110))
-            d.text((x+6, y), m['label'], fill=(255, 70, 100))
+            from console_ui import font
+            names = dict(person='사람',fire='화염',smoke='연기',door='문',staircase='계단')
+            label = names.get(m['label'],m['label'])
+            if m.get('depth_m') is not None:
+                label += f" {m['depth_m']:.1f}m"
+            face = font(22,True)
+            width = int(d.textlength(label,font=face))+12
+            tx,ty = max(0,min(x+10,im.width-width)),max(0,min(y-26,im.height-34))
+            d.ellipse((x-8,y-8,x+8,y+8),fill=(255,80,110),outline='white',width=2)
+            d.rectangle((tx,ty,tx+width,ty+33),fill='#101927')
+            d.text((tx+5,ty),label,font=face,fill='#ff728d')
         if state.pose:
             x, y = point(state.pose)
             a = state.pose[3]-state.meta['origin'][2]
@@ -180,3 +191,6 @@ class Dashboard:
 
     def run(self):
         self.root.mainloop()
+
+# Keep the existing State and map projection contract; use the operations layout.
+from console_ui import ConsoleDashboard as Dashboard

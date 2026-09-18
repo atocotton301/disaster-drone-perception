@@ -15,7 +15,7 @@ from core import load_config
 from doctor import inspect
 
 
-def main():
+def main(argv=None):
     root = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', type=Path, default=root/'config.json')
@@ -28,7 +28,9 @@ def main():
     p.add_argument('--bag', type=Path, help='Replay this system recorded ROS bag sensor inputs; recompute SLAM')
     p.add_argument('--check', action='store_true')
     p.add_argument('--auto-close', type=float, default=0, help='GUI smoke test only, seconds')
-    a = p.parse_args()
+    p.add_argument('--area-name', default='한성대 낙상관')
+    p.add_argument('--show-result', action='store_true', help='Show the saved mission map after clean shutdown')
+    a = p.parse_args(argv)
     if a.latest and a.source != 'session':
         p.error('--latest requires --source session')
     if a.replay and a.bag:
@@ -69,19 +71,27 @@ def main():
         if not sessions:
             raise SystemExit('No recorded data session yet')
         a.session = sorted(sessions)[-1]
+    progress_window = None
+    if a.show_result and not a.headless:
+        from mission import notice
+        progress_window = notice('탐색 시작 준비', '카메라·탐지 모델·지도 실행 환경을 확인하고 있습니다.')
     report = inspect(c, a.source, bool(a.replay or a.bag))
     if a.check:
+        if progress_window:progress_window.destroy()
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return bool(report['errors'])
     if report['errors']:
+        if progress_window:progress_window.destroy()
         print(json.dumps(report, indent=2, ensure_ascii=False))
         print('Environment incomplete. Use --source offline for an honest no-input viewer.')
         return 2
     lock = socket.socket()
+    lock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         lock.bind(('127.0.0.1', 18764))
         lock.listen(1)
     except OSError:
+        if progress_window:progress_window.destroy()
         print('Another disaster system instance is already running. Close it first.')
         return 2
     session = Path(c['runs_dir'])/datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -89,7 +99,7 @@ def main():
     (session/'environment.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     manifest = dict(config=c, source=a.source, replay=str(a.replay) if a.replay else None,
                     source_session=str(a.session) if a.session else None,
-                    hardware_verified=False, start_time=datetime.datetime.now().isoformat())
+                    hardware_verified=False, area_name=a.area_name, start_time=datetime.datetime.now().isoformat())
     if c['weights'] and Path(c['weights']).is_file():
         with open(c['weights'], 'rb') as model_file:
             digest = hashlib.sha256()
@@ -146,6 +156,7 @@ def main():
                        DISASTER_REPLAY=str(a.replay.resolve()) if a.replay else '', DISASTER_PYTHON=sys.executable,
                        DISASTER_BAG=str(a.bag.resolve()) if a.bag else '')
             os.environ['DISASTER_BAG'] = env['DISASTER_BAG']
+            os.environ['DISASTER_REPLAY'] = env['DISASTER_REPLAY']
             # One isolated ROS domain for this entry point and its children.
             env.setdefault('ROS_DOMAIN_ID', '73')
             os.environ['ROS_DOMAIN_ID'] = env['ROS_DOMAIN_ID']
@@ -183,7 +194,11 @@ def main():
                     print(state.error, flush=True)
                     stop.set()
         else:
+            if progress_window:progress_window.destroy();progress_window=None
             Dashboard(state, session, stop, c['stale_s']).run()
+            if a.show_result:
+                from mission import notice
+                progress_window=notice('탐색 종료 · 저장 중', '카메라 기록을 종료하고 지도·탐지 기록을 저장하고 있습니다.')
     except KeyboardInterrupt:
         pass
     finally:
@@ -195,7 +210,12 @@ def main():
         forced = []
         for child, name in reversed(processes):
             try:
-                child.wait(timeout=20)
+                deadline=time.monotonic()+20
+                while child.poll() is None:
+                    if progress_window:progress_window.update()
+                    try:child.wait(timeout=.2)
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:raise
             except subprocess.TimeoutExpired:
                 forced.append(name)
                 os.killpg(child.pid, signal.SIGTERM)
@@ -213,6 +233,19 @@ def main():
             finished=datetime.datetime.now().isoformat())), encoding='utf-8')
         lock.close()
     print('Saved session:', session)
+    if a.source not in ('session','offline'):
+        from mission_result import finalize_session
+        try:
+            finalize_session(session)
+        except Exception as e:
+            if progress_window:progress_window.destroy();progress_window=None
+            (session/'export_error.txt').write_text(str(e),encoding='utf-8')
+            print('Map export failed:',e,flush=True)
+            return 3
+        if a.show_result:
+            if progress_window:progress_window.destroy();progress_window=None
+            from mission import open_result_window
+            open_result_window(session)
     return 0
 
 

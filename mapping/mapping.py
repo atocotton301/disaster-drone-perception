@@ -31,8 +31,8 @@ class LocalMapper:
         self.height_band = height_band
         self.history = []
 
-    def update(self, depth, intrinsics):
-        cleaned = clean_depth(depth)
+    def update(self, depth, intrinsics, *, precleaned=False):
+        cleaned = depth if precleaned else clean_depth(depth)
         points = project(cleaned, intrinsics, stride=2)
         grid = obstacle_grid(points, min_points=self.min_points, height_band=self.height_band)
         if self.stationary:

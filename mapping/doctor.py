@@ -17,8 +17,10 @@ def inspect(config, source='ros', replay=False):
             report[f] = Path(f).read_text()[:2000]
     required = ['numpy', 'cv2', 'PIL', 'tkinter']
     if source == 'ros':
-        if not replay and not config['mount_verified']:
+        if not replay and not config['mount_verified'] and config.get('tracking_origin') != 'camera':
             report['errors'].append('Mount transform unverified: measure base_link→camera_link, then set mount_verified=true in config.json')
+        if config.get('tracking_origin') == 'camera':
+            report['warnings'].append('Camera-origin SLAM: camera pose only, no measured robot/floor mounting transform')
         required += ['rclpy', 'cv_bridge', 'message_filters', 'tf2_ros', 'rtabmap_msgs.msg']
     if source == 'sdk':
         required += ['pyrealsense2']

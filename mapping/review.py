@@ -23,12 +23,17 @@ def load_session(state, path):
     root = Path(path).resolve()
     if not (root/'manifest.json').is_file():
         raise ValueError('Select a runs/<timestamp> session containing manifest.json')
+    manifest = json.loads((root/'manifest.json').read_text(encoding='utf-8'))
     with state.lock:
         state.recorded = True
         state.source = '저장 기록 열람 · '+root.name
+        if manifest.get('replay'):
+            state.source = 'PUBLIC RGB-D REPLAY 결과 · 실시간 D435i 아님 · '+root.name
         state.tracking = 'RECORDED'
         state.reason = '실시간 입력 아님 · 저장된 마지막 지도/키프레임 궤적/영상'
         state.model = '저장된 탐지 기록'
+        if not manifest.get('model_sha256'):
+            state.model = 'NO_MODEL · 탐지 모델 미연결'
         map_path = root/'map.npz'
         if map_path.is_file():
             with np.load(map_path, allow_pickle=False) as data:
@@ -54,6 +59,9 @@ def load_session(state, path):
                 state.rgb = np.array(Image.open(rgb_file).convert('RGB'))
             with np.load(frame, allow_pickle=False) as data:
                 depth = data['depth_m']
+                if 'K' in data:
+                    from console_ui import point_cloud_preview
+                    state.pointcloud = point_cloud_preview(depth, data['K'])
                 colored = cv2.cvtColor(cv2.applyColorMap(np.uint8(np.clip(depth/6*255, 0, 255)), cv2.COLORMAP_TURBO), cv2.COLOR_BGR2RGB)
                 colored[depth == 0] = 0
                 state.depth = colored
