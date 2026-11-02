@@ -1,0 +1,17 @@
+{
+  "source": "https://colab.research.google.com/drive/1nrg2BDOlCrDfXQVg-nGE8URW9Oq9J-oi?authuser=1",
+  "provenance": "Transcribed from saved original notebook cell-p1jUUO-pOLbj output. This is an evaluation record, not recovered model weights.",
+  "evaluated_at_kst": "2026-09-13T16:52:22.079198+09:00",
+  "environment": "Colab Tesla T4",
+  "epochs_full": 21,
+  "training_hours_full": 2.427,
+  "test_images": 5581,
+  "precision": 0.6910809094038465,
+  "recall": 0.576233800420406,
+  "mAP50": 0.636206141242695,
+  "mAP50_95": 0.40712456246027245,
+  "class_AP50": {"person":0.5608430022831983,"fire":0.7849813248916362,"smoke":0.6593933554771957,"door":0.7934284483300653,"staircase":0.3823845752313799},
+  "model_recovered": false,
+  "original_runtime_zip_path": "/content/disaster_final_delivery.zip",
+  "limitations": ["Public dataset test split", "Not Jetson or flight validation", "Similar scene leakage not ruled out", "31 staircase test instances"]
+}

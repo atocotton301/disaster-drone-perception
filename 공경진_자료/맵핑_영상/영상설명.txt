@@ -1,0 +1,5 @@
+설명 슬라이드·음성 없이 맵핑 화면만 담은 영상입니다.
+01~03은 같은 TUM fr1/room 실행 기록의 서로 다른 연속 구간이며, 별개 장소가 아닙니다.
+전체 영상은 해당 기록 8~108초를 2배속으로 재생합니다.
+Jetson에서 RTAB-Map이 실제 갱신한 지도를 그대로 표시합니다. 공개 RGB-D 기록 재생이며 현장 D435i 촬영이 아닙니다.
+출처: https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download

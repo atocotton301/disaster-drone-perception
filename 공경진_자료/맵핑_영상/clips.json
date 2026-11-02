@@ -1,0 +1,26 @@
+[
+  {
+    "file": "맵핑_01_초기지도.mp4",
+    "source_start": 8,
+    "source_duration": 30,
+    "duration": 15.0
+  },
+  {
+    "file": "맵핑_02_지도확장.mp4",
+    "source_start": 38,
+    "source_duration": 30,
+    "duration": 15.0
+  },
+  {
+    "file": "맵핑_03_이동관측.mp4",
+    "source_start": 68,
+    "source_duration": 30,
+    "duration": 15.0
+  },
+  {
+    "file": "맵핑_전체_50초.mp4",
+    "source_start": 8,
+    "source_duration": 100,
+    "duration": 50.0
+  }
+]

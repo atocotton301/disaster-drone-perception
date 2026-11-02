@@ -1,0 +1,17 @@
+1단계 웹서버 켜기
+(터미널 만들기)
+폴더 들어가기
+cd drone_ai_project
+서버 켜기
+python gcs\app.py
+
+2단계 대시보드 켜기
+대시보드 주소
+http://127.0.0.1:5000
+
+3단계 카메라 켜기
+(새 터미널 만들기)
+폴더 들어가기
+cd drone_ai_project
+서버 켜기
+python gcs\app.py
